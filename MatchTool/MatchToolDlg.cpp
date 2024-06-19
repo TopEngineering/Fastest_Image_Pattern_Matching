@@ -29,7 +29,6 @@
 
 #define FONT_SIZE 115
 // CMatchToolDlg 對話方塊
-
 bool compareScoreBig2Small (const s_MatchParameter& lhs, const s_MatchParameter& rhs) { return  lhs.dMatchScore > rhs.dMatchScore; }
 bool comparePtWithAngle (const pair<Point2f, double> lhs, const pair<Point2f, double> rhs) { return lhs.second < rhs.second; }
 bool compareMatchResultByPos (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs)
@@ -43,6 +42,27 @@ bool compareMatchResultByPos (const s_SingleTargetMatch& lhs, const s_SingleTarg
 };
 bool compareMatchResultByScore (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) { return lhs.dMatchScore > rhs.dMatchScore; }
 bool compareMatchResultByPosX (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) { return lhs.ptCenter.x < rhs.ptCenter.x; }
+Mat Read_TCHAR (TCHAR* pTChar)
+{
+	CString cstr;
+	cstr.Format (L"%s", pTChar);
+
+	FILE* f = NULL;
+	_tfopen_s (&f, cstr, _T ("rb"));
+	if (!f)
+		return Mat ();
+	fseek (f, 0, SEEK_END);
+	size_t buffer_size = ftell (f);
+	fseek (f, 0, SEEK_SET);
+
+	std::vector<char> buffer (buffer_size);
+	fread (&buffer[0], sizeof (char), buffer_size, f);
+	fclose (f);
+
+	Mat mat = imdecode (buffer, IMREAD_GRAYSCALE);
+
+	return mat;
+}
 
 void MouseCall (int event, int x, int y, int flag, void* pUserData);
 const Scalar colorWaterBlue (230, 255, 102);
@@ -59,9 +79,9 @@ const Scalar colorGoldenrod (15, 185, 255);
 
 CMatchToolDlg::CMatchToolDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_MATCHTOOL_DIALOG, pParent)
-	, m_iMaxPos (5)
+	, m_iMaxPos (70)
 	, m_dMaxOverlap (0)
-	, m_dScore (0.8)
+	, m_dScore (0.5)
 	, m_dToleranceAngle (0)
 	, m_iMinReduceArea (256)
 	, m_bDebugMode (FALSE)
@@ -69,6 +89,8 @@ CMatchToolDlg::CMatchToolDlg(CWnd* pParent /*=nullptr*/)
 	, m_dTolerance2 (60)
 	, m_dTolerance3 (-110)
 	, m_dTolerance4 (-100)
+	, m_bStopLayer1(false)
+	, m_strTotalNum (_T (""))
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 	m_dDstScale = 1;
@@ -106,6 +128,8 @@ void CMatchToolDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Text (pDX, IDC_EDIT_TOLERANCE3, m_dTolerance3);
 	DDX_Text (pDX, IDC_EDIT_TOLERANCE4, m_dTolerance4);
 	DDX_Control (pDX, IDC_COMBO_LAN, m_cbLanSelect);
+	DDX_Control (pDX, IDC_CHECK_SIMD, m_ckSIMD);
+	DDX_Text (pDX, IDC_STATIC_NUM_SHOW, m_strTotalNum);
 }
 
 BEGIN_MESSAGE_MAP(CMatchToolDlg, CDialogEx)
@@ -244,7 +268,7 @@ BOOL CMatchToolDlg::OnInitDialog()
 	//語言
 	ChangeLanguage (L"English");
 	//GetDlgItem (IDC_STATIC_MAX_POS)->SetFont (&font);
-	
+
 	return TRUE;  // 傳回 TRUE，除非您對控制項設定焦點
 }
 
@@ -275,9 +299,9 @@ void CMatchToolDlg::OnLoadSrc ()
 		//開啟檔案成功
 		CString szFileName = fd.GetPathName (); //取得開啟檔案的全名(包含路徑)
 		
-		USES_CONVERSION;
-
-		m_matSrc = imread (String (T2A (szFileName.GetBuffer ())), IMREAD_GRAYSCALE);
+		//USES_CONVERSION;
+		//m_matSrc = imread (String (T2A (szFileName.GetBuffer ())), IMREAD_GRAYSCALE);
+		m_matSrc = Read_TCHAR (szFileName.GetBuffer ());
 		szFileName.ReleaseBuffer ();
 
 		LoadSrc ();
@@ -493,7 +517,7 @@ void CMatchToolDlg::OnLoadDst ()
 
 		USES_CONVERSION;
 
-		m_matDst = imread (String (T2A (szFileName.GetBuffer ())), IMREAD_GRAYSCALE);
+		m_matDst = Read_TCHAR (szFileName.GetBuffer ());
 		szFileName.ReleaseBuffer ();
 
 		LoadDst ();
@@ -504,7 +528,6 @@ void CMatchToolDlg::OnLoadDst ()
 void CMatchToolDlg::OnDropFiles (HDROP hDropInfo)
 {
 	// TODO: 在此加入您的訊息處理常式程式碼和 (或) 呼叫預設值
-	USES_CONVERSION;
 	int iCount_droppedfile = DragQueryFile (hDropInfo, 0xFFFFFFFF, NULL, 0);
 	CRect rectSrc, rectDst;
 	::GetWindowRect (GetDlgItem (IDC_STATIC_SRC_VIEW)->m_hWnd, rectSrc);
@@ -522,7 +545,6 @@ void CMatchToolDlg::OnDropFiles (HDROP hDropInfo)
 		if (DragQueryFile (hDropInfo, i, filepath, MAX_PATH) > 0)
 		{
 			CString cstrFile = filepath;
-			String strFile (T2A (cstrFile));
 
 			_TCHAR szPath[MAX_PATH];
 			_TCHAR szDrv[_MAX_DRIVE] = _T ("");//C: or D:
@@ -533,18 +555,16 @@ void CMatchToolDlg::OnDropFiles (HDROP hDropInfo)
 			_tsplitpath_s (filepath, szDrv, _MAX_DRIVE, szDir, _MAX_DIR, szName, _MAX_FNAME, szExt, _MAX_EXT);
 			_stprintf_s (szPath, MAX_PATH, _T ("%s%s%s"), szDrv, szDir, szName);
 			CString cstrFileName (szPath);
-			String strFileName (T2A (cstrFileName));
-
-			CString strSize;
-
 			if (rectSrc.PtInRect (pointCursor))
 			{
-				m_matSrc = imread (strFile, IMREAD_GRAYSCALE);
+				m_matSrc = Read_TCHAR (cstrFile.GetBuffer ());
+				cstrFile.ReleaseBuffer ();
 				LoadSrc ();
 			}
 			else if (rectDst.PtInRect (pointCursor))
 			{
-				m_matDst = imread (strFile, IMREAD_GRAYSCALE);
+				m_matDst = Read_TCHAR (cstrFile.GetBuffer ());
+				cstrFile.ReleaseBuffer ();
 				LoadDst ();
 			}
 		}
@@ -643,6 +663,8 @@ void CMatchToolDlg::ChangeLanguage (CString strLan)
 	GetDlgItem (IDC_BUTTON_EXECUTE)->SetWindowText (szBuf);
 	GetPrivateProfileString (strLan, L"Language", L"Language:", szBuf, _MAX_PATH, strLanPath);
 	GetDlgItem (IDC_STATIC_LANGUAGE)->SetWindowText (szBuf);
+	GetPrivateProfileString (strLan, L"SubPixel", L"SubPixel:", szBuf, _MAX_PATH, strLanPath);
+	GetDlgItem (IDC_CHECK_SUBPIXEL)->SetWindowText (szBuf);
 
 	GetPrivateProfileString (strLan, L"Index", L"Index", szBuf, _MAX_PATH, strLanPath);
 	m_strLanIndex = szBuf;
@@ -662,6 +684,8 @@ void CMatchToolDlg::ChangeLanguage (CString strLan)
 	m_strLanDstImageSize = szBuf;
 	GetPrivateProfileString (strLan, L"PixelPos", L"Pixel Pos", szBuf, _MAX_PATH, strLanPath);
 	m_strLanPixelPos = szBuf;
+	GetPrivateProfileString (strLan, L"Num", L"Num:", szBuf, _MAX_PATH, strLanPath);
+	GetDlgItem (IDC_STATIC_NUM)->SetWindowText (szBuf);
 
 	m_statusBar.SetPaneText (0, m_strLanExecutionTime);
 	m_statusBar.SetPaneText (1, m_strLanSourceImageSize);
@@ -814,7 +838,8 @@ BOOL CMatchToolDlg::Match ()
 	for (int iLayer = 1; iLayer <= iTopLayer; iLayer++)
 		vecLayerScore[iLayer] = vecLayerScore[iLayer - 1] * 0.9;
 
-	
+	Size sizePat = pTemplData->vecPyramid[iTopLayer].size ();
+	BOOL bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size ().area () / sizePat.area () > 500) && m_iMaxPos > 10;
 	for (int i = 0; i < iSize; i++)
 	{
 		Mat matRotatedSrc, matR = getRotationMatrix2D (ptCenter, vecAngles[i], 1);
@@ -824,70 +849,60 @@ BOOL CMatchToolDlg::Match ()
 		double dRotate = clock ();
 		Size sizeBest = GetBestRotationSize (vecMatSrcPyr[iTopLayer].size (), pTemplData->vecPyramid[iTopLayer].size (), vecAngles[i]);
 
-		Size sizePat = pTemplData->vecPyramid[iTopLayer].size ();
-		BOOL bWrongSize = (sizePat.width < sizeBest.width && sizePat.height > sizeBest.height)
-			|| (sizePat.width > sizeBest.width && sizePat.height < sizeBest.height
-				|| sizePat.area () > sizeBest.area ());
-		if (bWrongSize)
-			continue;
-
 		float fTranslationX = (sizeBest.width - 1) / 2.0f - ptCenter.x;
 		float fTranslationY = (sizeBest.height - 1) / 2.0f - ptCenter.y;
 		matR.at<double> (0, 2) += fTranslationX;
 		matR.at<double> (1, 2) += fTranslationY;
 		warpAffine (vecMatSrcPyr[iTopLayer], matRotatedSrc, matR, sizeBest, INTER_LINEAR, BORDER_CONSTANT, Scalar (pTemplData->iBorderColor));
 
-		MatchTemplate (matRotatedSrc, pTemplData, matResult, iTopLayer);
-		//matchTemplate (matRotatedSrc, pTemplData->vecPyramid[iTopLayer], matResult, CV_TM_CCOEFF_NORMED);
+		MatchTemplate (matRotatedSrc, pTemplData, matResult, iTopLayer, FALSE);
 
-		minMaxLoc (matResult, 0, &dMaxVal, 0, &ptMaxLoc);
-		if (dMaxVal < vecLayerScore[iTopLayer])
-			continue;
-		vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-
-		for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
+		if (bCalMaxByBlock)
 		{
-			ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, -1, pTemplData->vecPyramid[iTopLayer].cols, pTemplData->vecPyramid[iTopLayer].rows, dValue, m_dMaxOverlap);
-			if (dValue < vecLayerScore[iTopLayer])
+			s_BlockMax blockMax (matResult, pTemplData->vecPyramid[iTopLayer].size ());
+			blockMax.GetMaxValueLoc (dMaxVal, ptMaxLoc);
+			if (dMaxVal < vecLayerScore[iTopLayer])
 				continue;
-			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
-			
+			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
+			{
+				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap, blockMax);
+				if (dValue < vecLayerScore[iTopLayer])
+					break;
+				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+			}
+		}
+		else
+		{
+			minMaxLoc (matResult, 0, &dMaxVal, 0, &ptMaxLoc);
+			if (dMaxVal < vecLayerScore[iTopLayer])
+				continue;
+			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
+			{
+				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap);
+				if (dValue < vecLayerScore[iTopLayer])
+					break;
+				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+			}
 		}
 	}
 	sort (vecMatchParameter.begin (), vecMatchParameter.end (), compareScoreBig2Small);
-	//FilterWithScore (&vecMatchParameter, m_dScore - 0.05*iTopLayer);
 
-	//record rotated rectangle、ROI and angle
+	
 	int iMatchSize = (int)vecMatchParameter.size ();
 	int iDstW = pTemplData->vecPyramid[iTopLayer].cols, iDstH = pTemplData->vecPyramid[iTopLayer].rows;
-	
-	for (int i = 0; i < iMatchSize; i++)
-	{
-		Point2f ptLT, ptRT, ptRB, ptLB;
-		double dRAngle = -vecMatchParameter[i].dMatchAngle * D2R;
-		ptLT = ptRotatePt2f (vecMatchParameter[i].pt, ptCenter, dRAngle);
-		ptRT = Point2f (ptLT.x + iDstW * (float)cos (dRAngle), ptLT.y - iDstW * (float)sin (dRAngle));
-		ptLB = Point2f (ptLT.x + iDstH * (float)sin (dRAngle), ptLT.y + iDstH * (float)cos (dRAngle));
-		ptRB = Point2f (ptRT.x + iDstH * (float)sin (dRAngle), ptRT.y + iDstH * (float)cos (dRAngle));
-		//紀錄旋轉矩形
-		Point2f ptRectCenter = Point2f ((ptLT.x + ptRT.x + ptLB.x + ptRB.x) / 4.0f, (ptLT.y + ptRT.y + ptLB.y + ptRB.y) / 4.0f);
-		vecMatchParameter[i].rectR = RotatedRect (ptRectCenter, pTemplData->vecPyramid[iTopLayer].size (), (float)vecMatchParameter[i].dMatchAngle);
-
-	}
-	//紀錄旋轉矩形
-	//FilterWithRotatedRect (&vecMatchParameter, CV_TM_CCOEFF_NORMED, m_dMaxOverlap * m_dMaxOverlap);
-
 
 	//顯示第一層結果
 	if (m_bDebugMode)
 	{
-		int iDebugScale = 1;
+		int iDebugScale = 2;
 
 		Mat matShow, matResize;
 		resize (vecMatSrcPyr[iTopLayer], matResize, vecMatSrcPyr[iTopLayer].size () * iDebugScale);
 		cvtColor (matResize, matShow, CV_GRAY2BGR);
-		iMatchSize = (int)vecMatchParameter.size ();
 		string str = format ("Toplayer, Candidate:%d", iMatchSize);
+		vector<Point2f> vec;
 		for (int i = 0; i < iMatchSize; i++)
 		{
 			Point2f ptLT, ptRT, ptRB, ptLB;
@@ -901,21 +916,24 @@ BOOL CMatchToolDlg::Match ()
 			line (matShow, ptRB * iDebugScale, ptRT * iDebugScale, Scalar (0, 255, 0));
 			line (matShow, ptRT * iDebugScale, ptLT * iDebugScale, Scalar (0, 255, 0));
 			circle (matShow, ptLT * iDebugScale, 1, Scalar (0, 0, 255));
+			vec.push_back (ptLT* iDebugScale);
+			vec.push_back (ptRT* iDebugScale);
+			vec.push_back (ptLB* iDebugScale);
+			vec.push_back (ptRB* iDebugScale);
 
 			string strText = format ("%d", i);
 			putText (matShow, strText, ptLT *iDebugScale, FONT_HERSHEY_PLAIN, 1, Scalar (0, 255, 0));
-			imshow (str, matShow);
-			
 		}
-		imshow (str, matShow);
-		moveWindow (str, 0, 0);
+		cvNamedWindow (str.c_str (), 0x10000000);
+		Rect rectShow = boundingRect (vec);
+		imshow (str, matShow);// (rectShow));
+		//moveWindow (str, 0, 0);
 	}
-
 	//顯示第一層結果
-	int a = 0;
+
 	//第一階段結束
 	BOOL bSubPixelEstimation = m_bSubPixel.GetCheck ();
-	int iStopLayer = 0;
+	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
 	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
 	vector<s_MatchParameter> vecAllResult;
 	for (int i = 0; i < (int)vecMatchParameter.size (); i++)
@@ -962,13 +980,12 @@ BOOL CMatchToolDlg::Match ()
 				double dBigValue = -1;
 				for (int j = 0; j < iSize; j++)
 				{
-					Mat rMat, matResult, matRotatedSrc;
+					Mat matResult, matRotatedSrc;
 					double dMaxValue = 0;
 					Point ptMaxLoc;
-					if (iLayer == 0)
-						int a = 0;
 					GetRotatedROI (vecMatSrcPyr[iLayer], pTemplData->vecPyramid[iLayer].size (), ptLT * 2, vecAngles[j], matRotatedSrc);
-					MatchTemplate (matRotatedSrc, pTemplData, matResult, iLayer);
+
+					MatchTemplate (matRotatedSrc, pTemplData, matResult, iLayer, TRUE);
 					//matchTemplate (matRotatedSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCOEFF_NORMED);
 					minMaxLoc (matResult, 0, &dMaxValue, 0, &ptMaxLoc);
 					vecNewMatchParameter[j] = s_MatchParameter (ptMaxLoc, dMaxValue, vecAngles[j]);
@@ -979,7 +996,7 @@ BOOL CMatchToolDlg::Match ()
 						dBigValue = vecNewMatchParameter[j].dMatchScore;
 					}
 					//次像素估計
-					if (ptMaxLoc.x == 0 || ptMaxLoc.y == 0 || ptMaxLoc.y == matResult.cols - 1 || ptMaxLoc.x == matResult.rows - 1)
+					if (ptMaxLoc.x == 0 || ptMaxLoc.y == 0 || ptMaxLoc.x == matResult.cols - 1 || ptMaxLoc.y == matResult.rows - 1)
 						vecNewMatchParameter[j].bPosOnBorder = TRUE;
 					if (!vecNewMatchParameter[j].bPosOnBorder)
 					{
@@ -989,8 +1006,6 @@ BOOL CMatchToolDlg::Match ()
 					}
 					//次像素估計
 				}
-				//sort (vecNewMatchParameter.begin (), vecNewMatchParameter.end (), compareScoreBig2Small);
-				//if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < m_dScore - 0.05 * iLayer)
 				if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < vecLayerScore[iLayer])
 					break;
 				//次像素估計
@@ -998,7 +1013,7 @@ BOOL CMatchToolDlg::Match ()
 					&& iLayer == 0 
 					&& (!vecNewMatchParameter[iMaxScoreIndex].bPosOnBorder) 
 					&& iMaxScoreIndex != 0 
-					&& iMaxScoreIndex != 4)
+					&& iMaxScoreIndex != 2)
 				{
 					double dNewX = 0, dNewY = 0, dNewAngle = 0;
 					SubPixEsimation ( &vecNewMatchParameter, &dNewX, &dNewY, &dNewAngle, dAngleStep, iMaxScoreIndex);
@@ -1034,8 +1049,9 @@ BOOL CMatchToolDlg::Match ()
 	}
 	FilterWithScore (&vecAllResult, m_dScore);
 
-	//最後再次濾掉重疊
-	iDstW = pTemplData->vecPyramid[iStopLayer].cols, iDstH = pTemplData->vecPyramid[iStopLayer].rows;
+	//最後濾掉重疊
+	iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
+	iDstH = pTemplData->vecPyramid[iStopLayer].rows * (iStopLayer == 0 ? 1 : 2);
 
 	for (int i = 0; i < (int)vecAllResult.size (); i++)
 	{
@@ -1046,11 +1062,10 @@ BOOL CMatchToolDlg::Match ()
 		ptLB = Point2f (ptLT.x + iDstH * (float)sin (dRAngle), ptLT.y + iDstH * (float)cos (dRAngle));
 		ptRB = Point2f (ptRT.x + iDstH * (float)sin (dRAngle), ptRT.y + iDstH * (float)cos (dRAngle));
 		//紀錄旋轉矩形
-		Point2f ptRectCenter = Point2f ((ptLT.x + ptRT.x + ptLB.x + ptRB.x) / 4.0f, (ptLT.y + ptRT.y + ptLB.y + ptRB.y) / 4.0f);
-		vecAllResult[i].rectR = RotatedRect (ptRectCenter, pTemplData->vecPyramid[iStopLayer].size (), (float)vecAllResult[i].dMatchAngle);
+		vecAllResult[i].rectR = RotatedRect(ptLT, ptRT, ptRB);
 	}
 	FilterWithRotatedRect (&vecAllResult, CV_TM_CCOEFF_NORMED, m_dMaxOverlap);
-	//最後再次濾掉重疊
+	//最後濾掉重疊
 
 	//根據分數排序
 	sort (vecAllResult.begin (), vecAllResult.end (), compareScoreBig2Small);
@@ -1122,8 +1137,8 @@ BOOL CMatchToolDlg::Match ()
 		m_listMsg.SetItemText (i, SUBITEM_POS_Y, str);
 		//Msg
 	}
-
-	//sort (m_vecSingleTargetData.begin (), m_vecSingleTargetData.end (), compareMatchResultByPos);
+	m_strTotalNum.Format (L"%d", (int)m_vecSingleTargetData.size ());
+	UpdateData (FALSE);
 	m_bShowResult = TRUE;
 
 	RefreshSrcView ();
@@ -1257,35 +1272,37 @@ inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, i
 }
 //#define ORG
 
-void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
+void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
 {
-#ifdef ORG
-	matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
-#else
-	//From ImageShop
-	matResult.create (matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,
-		matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
-	matResult.setTo (0);
-	cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
-
-	int  t_r_end = matTemplate.rows, t_r = 0;
-	for (int r = 0; r < matResult.rows; r++)
+	if (m_ckSIMD.GetCheck () && bUseSIMD)
 	{
-		float* r_matResult = matResult.ptr<float> (r);
-		uchar* r_source = matSrc.ptr<uchar> (r);
-		uchar* r_template, *r_sub_source;
-		for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)
+		//From ImageShop
+		matResult.create (matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,
+			matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
+		matResult.setTo (0);
+		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
+
+		int  t_r_end = matTemplate.rows, t_r = 0;
+		for (int r = 0; r < matResult.rows; r++)
 		{
-			r_template = matTemplate.ptr<uchar> ();
-			r_sub_source = r_source;
-			for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
+			float* r_matResult = matResult.ptr<float> (r);
+			uchar* r_source = matSrc.ptr<uchar> (r);
+			uchar* r_template, *r_sub_source;
+			for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)
 			{
-				*r_matResult = *r_matResult + IM_Conv_SIMD (r_template, r_sub_source, matTemplate.cols);
+				r_template = matTemplate.ptr<uchar> ();
+				r_sub_source = r_source;
+				for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
+				{
+					*r_matResult = *r_matResult + IM_Conv_SIMD (r_template, r_sub_source, matTemplate.cols);
+				}
 			}
 		}
+		//From ImageShop
 	}
-	//From ImageShop
-#endif
+	else
+		matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
+	
 	/*Mat diff;
 	absdiff(matResult, matResult, diff);
 	double dMaxValue;
@@ -1320,8 +1337,6 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 
 	Mat sum, sqsum;
 	integral (matSrc, sum, sqsum, CV_64F);
-
-	double d2 = clock ();
 
 	q0 = (double*)sqsum.data;
 	q1 = q0 + pTemplData->vecPyramid[iLayer].cols;
@@ -1394,7 +1409,9 @@ Size CMatchToolDlg::GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAn
 	Point2f ptRT_R = ptRotatePt2f (Point2f (ptRT), ptCenter, dRAngle_radian);
 
 	float fTopY = max (max (ptLT_R.y, ptLB_R.y), max (ptRB_R.y, ptRT_R.y));
-	float fRightestX = max (max (ptLT_R.x, ptLB_R.x), max (ptRB_R.x, ptRT_R.x));
+	float fBottomY = min (min (ptLT_R.y, ptLB_R.y), min (ptRB_R.y, ptRT_R.y));
+	float fRightX = max (max (ptLT_R.x, ptLB_R.x), max (ptRB_R.x, ptRT_R.x));
+	float fLeftX = min (min (ptLT_R.x, ptLB_R.x), min (ptRB_R.x, ptRT_R.x));
 
 	if (dRAngle > 360)
 		dRAngle -= 360;
@@ -1437,9 +1454,17 @@ Size CMatchToolDlg::GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAn
 	float fH2 = sizeDst.height * sin (dAngle * D2R) * cos (dAngle * D2R);
 
 	int iHalfHeight = (int)ceil (fTopY - ptCenter.y - fH1);
-	int iHalfWidth = (int)ceil (fRightestX - ptCenter.x - fH2);
+	int iHalfWidth = (int)ceil (fRightX - ptCenter.x - fH2);
+	
+	Size sizeRet (iHalfWidth * 2, iHalfHeight * 2);
 
-	return Size (iHalfWidth * 2, iHalfHeight * 2);
+	BOOL bWrongSize = (sizeDst.width < sizeRet.width && sizeDst.height > sizeRet.height)
+		|| (sizeDst.width > sizeRet.width && sizeDst.height < sizeRet.height
+			|| sizeDst.area () > sizeRet.area ());
+	if (bWrongSize)
+		sizeRet = Size (int (fRightX - fLeftX + 0.5), int (fTopY - fBottomY + 0.5));
+
+	return sizeRet;
 }
 Point2f CMatchToolDlg::ptRotatePt2f (Point2f ptInput, Point2f ptOrg, double dAngle)
 {
@@ -1469,15 +1494,6 @@ void CMatchToolDlg::FilterWithScore (vector<s_MatchParameter>* vec, double dScor
 		return;
 	vec->erase (vec->begin () + iIndexDelete, vec->end ());
 	return;
-	//刪除小於比對分數的元素
-	vector<s_MatchParameter>::iterator it;
-	for (it = vec->begin (); it != vec->end ();)
-	{
-		if (((*it).dMatchScore < dScore))
-			it = vec->erase (it);
-		else
-			++it;
-	}
 }
 void CMatchToolDlg::FilterWithRotatedRect (vector<s_MatchParameter>* vec, int iMethod, double dMaxOverLap)
 {
@@ -1539,7 +1555,7 @@ void CMatchToolDlg::FilterWithRotatedRect (vector<s_MatchParameter>* vec, int iM
 			++it;
 	}
 }
-Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, double dMinValue, int iTemplateW, int iTemplateH, double& dMaxValue, double dMaxOverlap)
+Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTemplate, double& dMaxValue, double dMaxOverlap)
 {
 	//比對到的區域完全不重疊 : +-一個樣板寬高
 	//int iStartX = ptMaxLoc.x - iTemplateW;
@@ -1555,17 +1571,28 @@ Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, double dMin
 	//return ptNewMaxLoc;
 
 	//比對到的區域需考慮重疊比例
-	int iStartX = ptMaxLoc.x - iTemplateW * (1 - dMaxOverlap);
-	int iStartY = ptMaxLoc.y - iTemplateH * (1 - dMaxOverlap);
-	int iEndX = ptMaxLoc.x + iTemplateW * (1 - dMaxOverlap);
-
-	int iEndY = ptMaxLoc.y + iTemplateH * (1 - dMaxOverlap);
+	int iStartX = ptMaxLoc.x - sizeTemplate.width * (1 - dMaxOverlap);
+	int iStartY = ptMaxLoc.y - sizeTemplate.height * (1 - dMaxOverlap);
 	//塗黑
-	rectangle (matResult, Rect (iStartX, iStartY, 2 * iTemplateW * (1- dMaxOverlap), 2 * iTemplateH * (1- dMaxOverlap)), Scalar (dMinValue), CV_FILLED);
+	rectangle (matResult, Rect (iStartX, iStartY, 2 * sizeTemplate.width * (1- dMaxOverlap), 2 * sizeTemplate.height * (1- dMaxOverlap)), Scalar (-1), CV_FILLED);
 	//得到下一個最大值
 	Point ptNewMaxLoc;
 	minMaxLoc (matResult, 0, &dMaxValue, 0, &ptNewMaxLoc);
 	return ptNewMaxLoc;
+}
+Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTemplate, double & dMaxValue, double dMaxOverlap, s_BlockMax & blockMax)
+{
+	//比對到的區域需考慮重疊比例
+	int iStartX = int (ptMaxLoc.x - sizeTemplate.width * (1 - dMaxOverlap));
+	int iStartY = int (ptMaxLoc.y - sizeTemplate.height * (1 - dMaxOverlap));
+	Rect rectIgnore (iStartX, iStartY, int (2 * sizeTemplate.width * (1 - dMaxOverlap))
+		, int (2 * sizeTemplate.height * (1 - dMaxOverlap)));
+	//塗黑
+	rectangle (matResult, rectIgnore , Scalar (-1), CV_FILLED);
+	blockMax.UpdateMax (rectIgnore);
+	Point ptReturn;
+	blockMax.GetMaxValueLoc (dMaxValue, ptReturn);
+	return ptReturn;
 }
 void CMatchToolDlg::SortPtWithCenter (vector<Point2f>& vecSort)
 {
@@ -1670,11 +1697,48 @@ void CMatchToolDlg::LoadSrc ()
 	this->ScreenToClient (rectSrc); //将区域坐标由 对话框区转成对话框客户区坐标
 	InvalidateRect (rectSrc);
 	//防止顯示不同比例圖片時DC殘留
+
+	//Scroll Bar
+	m_hScrollBar.SetScrollPos (0);
+	m_vScrollBar.SetScrollPos (0);
 	RefreshSrcView ();
 	CString strSize;
 	strSize.Format (L"%s : %d X %d", m_strLanSourceImageSize, m_matSrc.cols, m_matSrc.rows);
 	m_statusBar.SetPaneText (1, strSize);
 	
+	//Test
+	//double d1 = clock ();
+	//Mat matResult;
+	//matchTemplate (m_matSrc, m_matDst, matResult, CV_TM_CCORR);
+	//double d2 = clock ();
+
+	////From ImageShop
+	//matResult.create (m_matSrc.rows - m_matDst.rows + 1,
+	//	m_matSrc.cols - m_matDst.cols + 1, CV_32FC1);
+	//matResult.setTo (0);
+	//cv::Mat& matTemplate = m_matDst;
+
+	//int  t_r_end = matTemplate.rows, t_r = 0;
+	//for (int r = 0; r < matResult.rows; r++)
+	//{
+	//	float* r_matResult = matResult.ptr<float> (r);
+	//	uchar* r_source = m_matSrc.ptr<uchar> (r);
+	//	uchar* r_template, *r_sub_source;
+	//	for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)
+	//	{
+	//		r_template = matTemplate.ptr<uchar> ();
+	//		r_sub_source = r_source;
+	//		for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += m_matSrc.cols, r_template += matTemplate.cols)
+	//		{
+	//			*r_matResult = *r_matResult + IM_Conv_SIMD (r_template, r_sub_source, matTemplate.cols);
+	//		}
+	//	}
+	//}
+	//double d3 = clock ();
+
+	//double d = (d3 - d2) / (d2 - d1);
+	//CString str; str.Format (L"%.3f", d); AfxMessageBox (str);
+	//
 }
 
 void CMatchToolDlg::LoadDst ()
